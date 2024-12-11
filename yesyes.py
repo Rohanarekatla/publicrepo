@@ -20,7 +20,7 @@ def get_group_id(access_token, group_display_name):
     """
     Get group ID from display name
     """
-    graph_url = f"https://graph.microsoft.com/v1.0/groups"
+    graph_url = "https://graph.microsoft.com/v1.0/groups"
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
@@ -42,7 +42,7 @@ def get_service_principal_id(access_token, app_display_name):
     """
     Get service principal ID from application display name
     """
-    graph_url = f"https://graph.microsoft.com/v1.0/servicePrincipals"
+    graph_url = "https://graph.microsoft.com/v1.0/servicePrincipals"
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
@@ -64,7 +64,7 @@ def check_group_assignment(access_token, sp_id, group_id):
     """
     Check if group is already assigned to the application
     """
-    graph_url = f"https://graph.microsoft.com/v1.0/servicePrincipals/{sp_id}/appRoleAssignments"
+    graph_url = f"https://graph.microsoft.com/v1.0/servicePrincipals/{sp_id}/appRoleAssignedTo"
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
@@ -80,32 +80,17 @@ def check_group_assignment(access_token, sp_id, group_id):
 
 def add_group_to_app(access_token, sp_id, group_id):
     """
-    Add group to the application using app role assignment
+    Add group to the application as a user assignment
     """
-    graph_url = f"https://graph.microsoft.com/v1.0/servicePrincipals/{sp_id}/appRoleAssignments"
+    graph_url = f"https://graph.microsoft.com/v1.0/servicePrincipals/{sp_id}/appRoleAssignedTo"
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
     }
     
-    # First, get the default app role
-    roles_url = f"https://graph.microsoft.com/v1.0/servicePrincipals/{sp_id}"
-    roles_response = requests.get(roles_url, headers=headers)
-    if roles_response.status_code != 200:
-        print(f"Error getting app roles: {roles_response.text}")
-        return False
-        
-    app_roles = roles_response.json().get('appRoles', [])
-    default_role = next((role for role in app_roles if role.get('isEnabled', True)), None)
-    
-    if not default_role:
-        print("No suitable app role found")
-        return False
-    
     data = {
         "principalId": group_id,
-        "resourceId": sp_id,
-        "appRoleId": default_role['id']
+        "resourceId": sp_id
     }
     
     response = requests.post(graph_url, headers=headers, json=data)
@@ -122,29 +107,33 @@ def main():
     group_display_name = "your_group_display_name"
     app_display_name = "your_app_display_name"
     
-    # Get access token
-    access_token = get_access_token(tenant_id, client_id, client_secret)
-    
-    # Get group ID and service principal ID
-    group_id = get_group_id(access_token, group_display_name)
-    sp_id = get_service_principal_id(access_token, app_display_name)
-    
-    if not group_id:
-        print(f"Could not find group with display name: {group_display_name}")
-        return
-    if not sp_id:
-        print(f"Could not find application with display name: {app_display_name}")
-        return
-    
-    # Check if group is already assigned
-    if check_group_assignment(access_token, sp_id, group_id):
-        print(f"Group '{group_display_name}' is already assigned to application '{app_display_name}'")
-    else:
-        # Add group to application
-        if add_group_to_app(access_token, sp_id, group_id):
-            print(f"Successfully added group '{group_display_name}' to application '{app_display_name}'")
+    try:
+        # Get access token
+        access_token = get_access_token(tenant_id, client_id, client_secret)
+        
+        # Get group ID and service principal ID
+        group_id = get_group_id(access_token, group_display_name)
+        sp_id = get_service_principal_id(access_token, app_display_name)
+        
+        if not group_id:
+            print(f"Could not find group with display name: {group_display_name}")
+            return
+        if not sp_id:
+            print(f"Could not find application with display name: {app_display_name}")
+            return
+        
+        # Check if group is already assigned
+        if check_group_assignment(access_token, sp_id, group_id):
+            print(f"Group '{group_display_name}' is already assigned to application '{app_display_name}'")
         else:
-            print("Failed to add group to application")
+            # Add group to application
+            if add_group_to_app(access_token, sp_id, group_id):
+                print(f"Successfully added group '{group_display_name}' to application '{app_display_name}'")
+            else:
+                print("Failed to add group to application")
+    
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
     main()
