@@ -1,34 +1,3 @@
-def get_adp_applications(access_token):
-    """
-    Get all enterprise applications with ADP AZURE or ADP AWS in their names
-    """
-    graph_url = "https://graph.microsoft.com/v1.0/servicePrincipals"
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Content-Type': 'application/json'
-    }
-    
-    params = {
-        '$select': 'id,displayName,appId'
-    }
-    
-    try:
-        response = requests.get(graph_url, headers=headers, params=params)
-        response.raise_for_status()
-        all_apps = response.json().get('value', [])
-        
-        # Filter apps starting with ADP AZURE or ADP AWS
-        adp_apps = []
-        for app in all_apps:
-            name = app.get('displayName', '')
-            if name.startswith('ADP AZURE') or name.startswith('ADP AWS'):
-                adp_apps.append(app)
-                print(f"Found app: {name}")
-                
-        return adp_apps
-        
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching applications: {str(e)}")
-        if hasattr(e.response, 'text'):
-            print(f"Response content: {e.response.text}")
-        return []
+for sub in $(az account list --query "[].id" -o tsv); do
+    az account set --subscription $sub
+    az resource list --name YOUR-VNET-NAME --resource-type "Microsoft.Network/virtualNetworks" --query "[].{Subscription:subscriptionId, ResourceGroup:resourceGroup, AddressSpace:properties.addressSpace.addressPrefixes[]}" -o tsv 2>/dev/null || true
