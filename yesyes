@@ -1,1 +1,1 @@
-for /f %i in ('az account list --query "[].id" -o tsv') do @(az account set --subscription %i > nul && az resource list --name YOUR-VNET-NAME --resource-type "Microsoft.Network/virtualNetworks" --query "[].{Subscription:subscriptionId, AddressSpace:properties.addressSpace.addressPrefixes[0]}" -o tsv 2>nul)
+for /f %i in ('az account list --query "[].id" -o tsv') do @(az account set --subscription %i > nul && az network vnet list --query "[?name=='YOUR-VNET-NAME'].{Subscription:'%i', AddressSpace:addressSpace.addressPrefixes[0]}" -o tsv 2>nul)
