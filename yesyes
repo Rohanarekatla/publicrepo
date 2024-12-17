@@ -1,0 +1,1 @@
+az login --service-principal --username YOUR_CLIENT_ID --password YOUR_CLIENT_SECRET --tenant YOUR_TENANT_ID > nul && for /f %i in ('az account list --query "[?state==\'Enabled\'].id" -o tsv') do @(az network vnet list --subscription %i --query "[?name=='YOUR-VNET-NAME'].addressSpace.addressPrefixes[0]" -o tsv 2>nul && exit /b)
