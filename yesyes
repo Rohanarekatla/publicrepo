@@ -1,1 +1,92 @@
-az login --service-principal --username YOUR_CLIENT_ID --password YOUR_CLIENT_SECRET --tenant YOUR_TENANT_ID > nul && for /f %i in ('az account list --query "[?state==\'Enabled\'].id" -o tsv') do @(az network vnet list --subscription %i --query "[?name=='YOUR-VNET-NAME'].addressSpace.addressPrefixes[0]" -o tsv 2>nul && exit /b)
+-- Create a temporary large table with random data
+CREATE OR REPLACE TEMPORARY TABLE large_test_data AS
+WITH RECURSIVE numbers AS (
+    SELECT 0 as n
+    UNION ALL
+    SELECT n + 1
+    FROM numbers
+    WHERE n < 999999  -- This will generate 1 million rows
+)
+SELECT 
+    n as id,
+    RANDOM() as random_number,
+    RANDSTR(50, RANDOM()) as random_string,
+    DATEADD(day, -1*n, CURRENT_DATE()) as date_field,
+    UNIFORM(1, 1000000, RANDOM()) as numeric_field,
+    CASE WHEN RANDOM() < 0.5 THEN 'A' ELSE 'B' END as category
+FROM numbers;
+
+-- Create secondary objects needed for testing
+CREATE OR REPLACE DATABASE replication_test_db;
+CREATE OR REPLACE SCHEMA replication_test_db.test_schema;
+
+-- Create the table we'll use for replication
+CREATE OR REPLACE TABLE replication_test_db.test_schema.replication_table AS 
+SELECT * FROM large_test_data;
+
+-- Get initial size metrics
+SELECT 
+    TABLE_NAME,
+    TABLE_SCHEMA,
+    TABLE_CATALOG,
+    BYTES,
+    ROW_COUNT,
+    BYTES/1024/1024 as SIZE_MB
+FROM information_schema.tables 
+WHERE table_name = 'REPLICATION_TABLE';
+
+-- Create failover group
+CREATE OR REPLACE FAILOVER GROUP test_failover_group
+    ALLOWEDACCOUNTS = <secondary_account_locator>
+    REPLICATION_SCHEDULE = '10 MINUTE'
+    OBJECT_TYPES = (TABLES)
+    ALLOWED_DATABASES = (replication_test_db);
+
+-- Wait for initial replication to complete
+-- You can monitor replication status with:
+SELECT * 
+FROM table(information_schema.replication_usage_history(
+    date_range_start=>dateadd('hours',-1,current_timestamp()),
+    date_range_end=>current_timestamp()));
+
+-- After replication completes, check replication credit usage:
+SELECT 
+    start_time,
+    end_time,
+    credits_used,
+    bytes_transferred,
+    bytes_transferred/1024/1024 as MB_transferred
+FROM table(information_schema.replication_usage_history(
+    date_range_start=>dateadd('hours',-24,current_timestamp()),
+    date_range_end=>current_timestamp()))
+ORDER BY start_time DESC;
+
+-- To analyze cost after dropping and recreating:
+-- 1. First record initial credit usage
+-- 2. Drop the failover group
+-- 3. Recreate it
+-- 4. Compare new credit usage
+
+-- After dropping and recreating, run this to compare:
+WITH before_drop AS (
+    SELECT SUM(credits_used) as initial_credits,
+           SUM(bytes_transferred) as initial_bytes
+    FROM table(information_schema.replication_usage_history(
+        date_range_start=>dateadd('hours',-24,current_timestamp()),
+        date_range_end=>dateadd('hours',-1,current_timestamp())))
+),
+after_recreate AS (
+    SELECT SUM(credits_used) as new_credits,
+           SUM(bytes_transferred) as new_bytes
+    FROM table(information_schema.replication_usage_history(
+        date_range_start=>dateadd('hours',-1,current_timestamp()),
+        date_range_end=>current_timestamp()))
+)
+SELECT 
+    initial_credits,
+    new_credits,
+    (new_credits/initial_credits) as credit_multiplier,
+    initial_bytes/1024/1024 as initial_MB,
+    new_bytes/1024/1024 as new_MB,
+    (new_bytes/initial_bytes) as data_multiplier
+FROM before_drop, after_recreate;
