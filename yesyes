@@ -22,7 +22,8 @@ def get_pool_id_by_name(client, pool_name):
         # Find the pool with matching name
         for pool in pools:
             if pool.name.lower() == pool_name.lower():
-                return pool.id
+                # Ensure pool.id is returned as an integer
+                return int(pool.id)
         
         print(f"\nNo pool found with name: {pool_name}")
         print("Available pools:")
@@ -46,6 +47,9 @@ def get_inactive_agents(client, pool_id):
         list: List of inactive agents with their details
     """
     try:
+        # Ensure pool_id is an integer
+        pool_id = int(pool_id)
+        
         # Get all agents in the pool
         agents = client.get_agents(pool_id)
         
@@ -57,9 +61,32 @@ def get_inactive_agents(client, pool_id):
         
         return inactive_agents
     
+    except ValueError as e:
+        print(f"Error: Invalid pool ID format: {str(e)}")
+        return None
     except Exception as e:
         print(f"Error getting agents: {str(e)}")
         return None
+
+def format_datetime(datetime_str):
+    """
+    Safely format datetime string.
+    
+    Args:
+        datetime_str: Datetime string to format
+    
+    Returns:
+        str: Formatted datetime string or None
+    """
+    if not datetime_str:
+        return None
+    try:
+        # Handle different datetime string formats
+        if 'Z' in datetime_str:
+            datetime_str = datetime_str.replace('Z', '+00:00')
+        return datetime.fromisoformat(datetime_str)
+    except Exception:
+        return datetime_str
 
 def main():
     # Configuration
@@ -91,16 +118,22 @@ def main():
             print(f"\nFound {len(inactive_agents)} inactive agents:")
             print("-" * 50)
             for agent in inactive_agents:
-                last_seen = datetime.fromisoformat(agent.created_on.replace('Z', '+00:00')) if agent.created_on else None
-                print(f"Name: {agent.name}")
-                print(f"ID: {agent.id}")
-                print(f"Status: {agent.status}")
-                print(f"Enabled: {agent.enabled}")
-                print(f"Last Seen: {last_seen}")
-                print(f"Version: {agent.version}")
-                print(f"OS Description: {agent.os_description}")
-                print(f"Provisioning State: {agent.provisioning_state}")
-                print("-" * 50)
+                try:
+                    # Safely handle attribute access with getattr
+                    last_seen = format_datetime(getattr(agent, 'created_on', None))
+                    
+                    print(f"Name: {getattr(agent, 'name', 'N/A')}")
+                    print(f"ID: {getattr(agent, 'id', 'N/A')}")
+                    print(f"Status: {getattr(agent, 'status', 'N/A')}")
+                    print(f"Enabled: {getattr(agent, 'enabled', 'N/A')}")
+                    print(f"Last Seen: {last_seen if last_seen else 'N/A'}")
+                    print(f"Version: {getattr(agent, 'version', 'N/A')}")
+                    print(f"OS Description: {getattr(agent, 'os_description', 'N/A')}")
+                    print(f"Provisioning State: {getattr(agent, 'provisioning_state', 'N/A')}")
+                    print("-" * 50)
+                except Exception as e:
+                    print(f"Error displaying agent details: {str(e)}")
+                    continue
         else:
             print("No inactive agents found or error occurred.")
     
@@ -113,6 +146,7 @@ def main():
         print("   - Agent Pools (Read)")
         print("   - Build (Read)")
         print("3. Check that your organization URL is correct")
+        print(f"\nFull error details: {type(e).__name__}: {str(e)}")
 
 if __name__ == "__main__":
     main()
