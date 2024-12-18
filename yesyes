@@ -1,7 +1,22 @@
 import requests
 from datetime import datetime, timezone
+import urllib3
+import sys
+import os
 
-def get_pool_id_by_name(organization, pool_name, pat_token):
+def setup_ssl_context():
+    """
+    Set up SSL context and handle certificate verification
+    """
+    try:
+        # Attempt to import certifi for certificate verification
+        import certifi
+        os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+    except ImportError:
+        print("Certifi package not found. Installing required packages may help resolve SSL issues.")
+        print("Try running: pip install certifi")
+        
+def get_pool_id_by_name(organization, pool_name, pat_token, verify_ssl=True):
     """
     Get the pool ID from Azure DevOps using the pool name.
     
@@ -9,6 +24,7 @@ def get_pool_id_by_name(organization, pool_name, pat_token):
         organization (str): Azure DevOps organization name
         pool_name (str): Name of the agent pool
         pat_token (str): Personal Access Token
+        verify_ssl (bool): Whether to verify SSL certificates
     
     Returns:
         int: Pool ID if found, None otherwise
@@ -25,7 +41,7 @@ def get_pool_id_by_name(organization, pool_name, pat_token):
     endpoint = f"{base_url}/_apis/distributedtask/pools?api-version={api_version}"
     
     try:
-        response = requests.get(endpoint, headers=auth_header)
+        response = requests.get(endpoint, headers=auth_header, verify=verify_ssl)
         response.raise_for_status()
         
         pools_data = response.json()
@@ -36,13 +52,23 @@ def get_pool_id_by_name(organization, pool_name, pat_token):
                 return pool.get('id')
         
         print(f"No pool found with name: {pool_name}")
+        print("Available pools:")
+        for pool in pools_data.get('value', []):
+            print(f"- {pool.get('name')}")
         return None
         
+    except requests.exceptions.SSLError as e:
+        print("\nSSL Error occurred. You have several options:")
+        print("1. Install certifi package: pip install certifi")
+        print("2. Run the script with verify_ssl=False (less secure)")
+        print("3. Add your organization's root certificate to the system's trust store")
+        print(f"\nError details: {str(e)}")
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Error accessing Azure DevOps API: {str(e)}")
         return None
 
-def get_inactive_agents(organization, pool_id, pat_token):
+def get_inactive_agents(organization, pool_id, pat_token, verify_ssl=True):
     """
     Get all inactive agents from a specific agent pool in Azure DevOps.
     
@@ -50,6 +76,7 @@ def get_inactive_agents(organization, pool_id, pat_token):
         organization (str): Azure DevOps organization name
         pool_id (int): Agent pool ID
         pat_token (str): Personal Access Token
+        verify_ssl (bool): Whether to verify SSL certificates
     
     Returns:
         list: List of inactive agents with their details
@@ -66,7 +93,7 @@ def get_inactive_agents(organization, pool_id, pat_token):
     endpoint = f"{base_url}/_apis/distributedtask/pools/{pool_id}/agents?api-version={api_version}"
     
     try:
-        response = requests.get(endpoint, headers=auth_header)
+        response = requests.get(endpoint, headers=auth_header, verify=verify_ssl)
         response.raise_for_status()
         
         agents_data = response.json()
@@ -89,44 +116,57 @@ def get_inactive_agents(organization, pool_id, pat_token):
         
         return inactive_agents
     
+    except requests.exceptions.SSLError as e:
+        print(f"\nSSL Error occurred: {str(e)}")
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Error accessing Azure DevOps API: {str(e)}")
         return None
 
 def main():
+    # Setup SSL context
+    setup_ssl_context()
+    
     # Configuration
-    organization = "your-organization"
-    pool_name = "your-pool-name"  # Specify the pool name instead of ID
-    pat_token = "your-pat-token"  # Base64 encoded PAT token
+    organization = "your-organization"  # Replace with your organization name
+    pool_name = "your-pool-name"       # Replace with your pool name
+    pat_token = "your-pat-token"       # Replace with your Base64 encoded PAT token
     
-    # First get the pool ID from the name
-    pool_id = get_pool_id_by_name(organization, pool_name, pat_token)
+    # Set to False if you continue to have SSL issues (less secure)
+    verify_ssl = True
     
-    if not pool_id:
-        print("Could not proceed without pool ID.")
-        return
-    
-    print(f"Found pool ID: {pool_id} for pool name: {pool_name}")
-    
-    # Get inactive agents
-    inactive_agents = get_inactive_agents(organization, pool_id, pat_token)
-    
-    if inactive_agents:
-        print(f"\nFound {len(inactive_agents)} inactive agents:")
-        print("-" * 50)
-        for agent in inactive_agents:
-            last_seen = datetime.fromisoformat(agent['lastSeenTime'].replace('Z', '+00:00')) if agent['lastSeenTime'] else None
-            print(f"Name: {agent['name']}")
-            print(f"ID: {agent['id']}")
-            print(f"Status: {agent['status']}")
-            print(f"Enabled: {agent['enabled']}")
-            print(f"Last Seen: {last_seen}")
-            print(f"Version: {agent['version']}")
-            print(f"OS: {agent['osDescription']}")
-            print(f"Provisioning State: {agent['provisioningState']}")
+    try:
+        # First get the pool ID from the name
+        pool_id = get_pool_id_by_name(organization, pool_name, pat_token, verify_ssl)
+        
+        if not pool_id:
+            print("Could not proceed without pool ID.")
+            return
+        
+        print(f"Found pool ID: {pool_id} for pool name: {pool_name}")
+        
+        # Get inactive agents
+        inactive_agents = get_inactive_agents(organization, pool_id, pat_token, verify_ssl)
+        
+        if inactive_agents:
+            print(f"\nFound {len(inactive_agents)} inactive agents:")
             print("-" * 50)
-    else:
-        print("No inactive agents found or error occurred.")
+            for agent in inactive_agents:
+                last_seen = datetime.fromisoformat(agent['lastSeenTime'].replace('Z', '+00:00')) if agent['lastSeenTime'] else None
+                print(f"Name: {agent['name']}")
+                print(f"ID: {agent['id']}")
+                print(f"Status: {agent['status']}")
+                print(f"Enabled: {agent['enabled']}")
+                print(f"Last Seen: {last_seen}")
+                print(f"Version: {agent['version']}")
+                print(f"OS: {agent['osDescription']}")
+                print(f"Provisioning State: {agent['provisioningState']}")
+                print("-" * 50)
+        else:
+            print("No inactive agents found or error occurred.")
+    
+    except Exception as e:
+        print(f"An unexpected error occurred: {str(e)}")
 
 if __name__ == "__main__":
     main()
