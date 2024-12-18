@@ -1,92 +1,132 @@
--- Create a temporary large table with random data
-CREATE OR REPLACE TEMPORARY TABLE large_test_data AS
-WITH RECURSIVE numbers AS (
-    SELECT 0 as n
-    UNION ALL
-    SELECT n + 1
-    FROM numbers
-    WHERE n < 999999  -- This will generate 1 million rows
-)
-SELECT 
-    n as id,
-    RANDOM() as random_number,
-    RANDSTR(50, RANDOM()) as random_string,
-    DATEADD(day, -1*n, CURRENT_DATE()) as date_field,
-    UNIFORM(1, 1000000, RANDOM()) as numeric_field,
-    CASE WHEN RANDOM() < 0.5 THEN 'A' ELSE 'B' END as category
-FROM numbers;
+import requests
+from datetime import datetime, timezone
 
--- Create secondary objects needed for testing
-CREATE OR REPLACE DATABASE replication_test_db;
-CREATE OR REPLACE SCHEMA replication_test_db.test_schema;
+def get_pool_id_by_name(organization, pool_name, pat_token):
+    """
+    Get the pool ID from Azure DevOps using the pool name.
+    
+    Args:
+        organization (str): Azure DevOps organization name
+        pool_name (str): Name of the agent pool
+        pat_token (str): Personal Access Token
+    
+    Returns:
+        int: Pool ID if found, None otherwise
+    """
+    base_url = f"https://dev.azure.com/{organization}"
+    
+    auth_header = {
+        'Authorization': f'Basic {pat_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    # API endpoint for getting all pools
+    api_version = '7.1'
+    endpoint = f"{base_url}/_apis/distributedtask/pools?api-version={api_version}"
+    
+    try:
+        response = requests.get(endpoint, headers=auth_header)
+        response.raise_for_status()
+        
+        pools_data = response.json()
+        
+        # Find the pool with matching name
+        for pool in pools_data.get('value', []):
+            if pool.get('name', '').lower() == pool_name.lower():
+                return pool.get('id')
+        
+        print(f"No pool found with name: {pool_name}")
+        return None
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Error accessing Azure DevOps API: {str(e)}")
+        return None
 
--- Create the table we'll use for replication
-CREATE OR REPLACE TABLE replication_test_db.test_schema.replication_table AS 
-SELECT * FROM large_test_data;
+def get_inactive_agents(organization, pool_id, pat_token):
+    """
+    Get all inactive agents from a specific agent pool in Azure DevOps.
+    
+    Args:
+        organization (str): Azure DevOps organization name
+        pool_id (int): Agent pool ID
+        pat_token (str): Personal Access Token
+    
+    Returns:
+        list: List of inactive agents with their details
+    """
+    base_url = f"https://dev.azure.com/{organization}"
+    
+    auth_header = {
+        'Authorization': f'Basic {pat_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    # API endpoint for getting agents in a pool
+    api_version = '7.1'
+    endpoint = f"{base_url}/_apis/distributedtask/pools/{pool_id}/agents?api-version={api_version}"
+    
+    try:
+        response = requests.get(endpoint, headers=auth_header)
+        response.raise_for_status()
+        
+        agents_data = response.json()
+        
+        # Filter for inactive agents
+        inactive_agents = []
+        for agent in agents_data.get('value', []):
+            if not agent.get('enabled', False) or agent.get('status') != 'online':
+                agent_info = {
+                    'name': agent.get('name'),
+                    'id': agent.get('id'),
+                    'status': agent.get('status'),
+                    'enabled': agent.get('enabled'),
+                    'lastSeenTime': agent.get('lastSeenTime'),
+                    'version': agent.get('version'),
+                    'osDescription': agent.get('osDescription'),
+                    'provisioningState': agent.get('provisioningState')
+                }
+                inactive_agents.append(agent_info)
+        
+        return inactive_agents
+    
+    except requests.exceptions.RequestException as e:
+        print(f"Error accessing Azure DevOps API: {str(e)}")
+        return None
 
--- Get initial size metrics
-SELECT 
-    TABLE_NAME,
-    TABLE_SCHEMA,
-    TABLE_CATALOG,
-    BYTES,
-    ROW_COUNT,
-    BYTES/1024/1024 as SIZE_MB
-FROM information_schema.tables 
-WHERE table_name = 'REPLICATION_TABLE';
+def main():
+    # Configuration
+    organization = "your-organization"
+    pool_name = "your-pool-name"  # Specify the pool name instead of ID
+    pat_token = "your-pat-token"  # Base64 encoded PAT token
+    
+    # First get the pool ID from the name
+    pool_id = get_pool_id_by_name(organization, pool_name, pat_token)
+    
+    if not pool_id:
+        print("Could not proceed without pool ID.")
+        return
+    
+    print(f"Found pool ID: {pool_id} for pool name: {pool_name}")
+    
+    # Get inactive agents
+    inactive_agents = get_inactive_agents(organization, pool_id, pat_token)
+    
+    if inactive_agents:
+        print(f"\nFound {len(inactive_agents)} inactive agents:")
+        print("-" * 50)
+        for agent in inactive_agents:
+            last_seen = datetime.fromisoformat(agent['lastSeenTime'].replace('Z', '+00:00')) if agent['lastSeenTime'] else None
+            print(f"Name: {agent['name']}")
+            print(f"ID: {agent['id']}")
+            print(f"Status: {agent['status']}")
+            print(f"Enabled: {agent['enabled']}")
+            print(f"Last Seen: {last_seen}")
+            print(f"Version: {agent['version']}")
+            print(f"OS: {agent['osDescription']}")
+            print(f"Provisioning State: {agent['provisioningState']}")
+            print("-" * 50)
+    else:
+        print("No inactive agents found or error occurred.")
 
--- Create failover group
-CREATE OR REPLACE FAILOVER GROUP test_failover_group
-    ALLOWEDACCOUNTS = <secondary_account_locator>
-    REPLICATION_SCHEDULE = '10 MINUTE'
-    OBJECT_TYPES = (TABLES)
-    ALLOWED_DATABASES = (replication_test_db);
-
--- Wait for initial replication to complete
--- You can monitor replication status with:
-SELECT * 
-FROM table(information_schema.replication_usage_history(
-    date_range_start=>dateadd('hours',-1,current_timestamp()),
-    date_range_end=>current_timestamp()));
-
--- After replication completes, check replication credit usage:
-SELECT 
-    start_time,
-    end_time,
-    credits_used,
-    bytes_transferred,
-    bytes_transferred/1024/1024 as MB_transferred
-FROM table(information_schema.replication_usage_history(
-    date_range_start=>dateadd('hours',-24,current_timestamp()),
-    date_range_end=>current_timestamp()))
-ORDER BY start_time DESC;
-
--- To analyze cost after dropping and recreating:
--- 1. First record initial credit usage
--- 2. Drop the failover group
--- 3. Recreate it
--- 4. Compare new credit usage
-
--- After dropping and recreating, run this to compare:
-WITH before_drop AS (
-    SELECT SUM(credits_used) as initial_credits,
-           SUM(bytes_transferred) as initial_bytes
-    FROM table(information_schema.replication_usage_history(
-        date_range_start=>dateadd('hours',-24,current_timestamp()),
-        date_range_end=>dateadd('hours',-1,current_timestamp())))
-),
-after_recreate AS (
-    SELECT SUM(credits_used) as new_credits,
-           SUM(bytes_transferred) as new_bytes
-    FROM table(information_schema.replication_usage_history(
-        date_range_start=>dateadd('hours',-1,current_timestamp()),
-        date_range_end=>current_timestamp()))
-)
-SELECT 
-    initial_credits,
-    new_credits,
-    (new_credits/initial_credits) as credit_multiplier,
-    initial_bytes/1024/1024 as initial_MB,
-    new_bytes/1024/1024 as new_MB,
-    (new_bytes/initial_bytes) as data_multiplier
-FROM before_drop, after_recreate;
+if __name__ == "__main__":
+    main()
