@@ -1,0 +1,39 @@
+locals {
+  # Read and process the groups file
+  content         = file(var.config_file)
+  lines           = split("\n", local.content)
+  filtered_lines  = [for line in local.lines : line if line != ""]
+  names           = [for line in local.filtered_lines : split(" ", line)[0]]
+
+  # Create a map of all combinations of groups and apps
+  group_app_combinations = flatten([
+    for app in data.azuread_service_principals.all_apps.service_principals : [
+      for name in local.names : {
+        group_name = name
+        app_object_id = app.object_id
+        app_role_id = coalesce(
+          try(app.app_roles[0].value, null),
+          "00000000-0000-0000-0000-000000000000"  # Default role if none exists
+        )
+      }
+    ]
+  ])
+}
+
+# Fetch AD groups
+data "azuread_group" "group" {
+  for_each     = toset(local.names)
+  display_name = each.value
+}
+
+# Create role assignments for all combinations
+resource "azuread_app_role_assignment" "group_assignment" {
+  for_each = {
+    for combo in local.group_app_combinations : 
+    "${combo.group_name}-${combo.app_object_id}" => combo
+  }
+
+  principal_object_id = data.azuread_group.group[each.value.group_name].id
+  resource_object_id  = each.value.app_object_id
+  app_role_id        = each.value.app_role_id
+}
